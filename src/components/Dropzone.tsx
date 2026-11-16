@@ -73,8 +73,8 @@ export default function Dropzone({ onFileSelect }: DropzoneProps) {
         onClick={triggerFileInput}
         className={`group relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 text-center transition-all duration-300 ${
           isDragActive
-            ? 'border-neutral-900 bg-neutral-50/80 scale-[0.99] shadow-inner'
-            : 'border-neutral-200 bg-white hover:border-neutral-400 hover:shadow-sm hover:scale-[1.005]'
+            ? 'border-neutral-900 bg-neutral-50/80 dark:border-neutral-400 dark:bg-neutral-800/60 scale-[0.99] shadow-inner'
+            : 'border-neutral-200 bg-white hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-neutral-700 hover:shadow-sm hover:scale-[1.005]'
         }`}
       >
         <input
@@ -87,22 +87,22 @@ export default function Dropzone({ onFileSelect }: DropzoneProps) {
 
         <div className="flex flex-col items-center gap-4">
           {/* Upload Icon Container */}
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-neutral-50 border border-neutral-100 text-neutral-600 transition-transform duration-300 group-hover:scale-110 group-hover:bg-neutral-900 group-hover:text-white shadow-sm">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-neutral-50 dark:bg-neutral-800 border border-neutral-100 dark:border-neutral-700/80 text-neutral-600 dark:text-neutral-400 transition-transform duration-300 group-hover:scale-110 group-hover:bg-neutral-900 group-hover:text-white dark:group-hover:bg-white dark:group-hover:text-neutral-950 shadow-sm">
             <Upload className="h-6 w-6" />
           </div>
 
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-neutral-800">
+            <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">
               Upload your photo
             </h3>
-            <p className="text-xs text-neutral-400 max-w-[240px] mx-auto leading-relaxed">
-              Drag and drop your image here, or <span className="font-semibold text-neutral-800 underline decoration-neutral-300 decoration-2 underline-offset-2">browse</span> your device.
+            <p className="text-xs text-neutral-400 dark:text-neutral-500 max-w-[240px] mx-auto leading-relaxed">
+              Drag and drop your image here, or <span className="font-semibold text-neutral-800 dark:text-neutral-200 underline decoration-neutral-300 dark:decoration-neutral-600 decoration-2 underline-offset-2">browse</span> your device.
             </p>
           </div>
 
           {/* Formats info */}
-          <div className="flex items-center gap-3 rounded-lg border border-neutral-100 bg-neutral-50/50 px-3 py-1.5 text-[10px] font-medium text-neutral-400">
-            <FileImage className="h-3.5 w-3.5 text-neutral-400" />
+          <div className="flex items-center gap-3 rounded-lg border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/50 px-3 py-1.5 text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
+            <FileImage className="h-3.5 w-3.5 text-neutral-400 dark:text-neutral-500" />
             <span>PNG, JPEG (Max. 12MB)</span>
           </div>
         </div>
@@ -110,8 +110,8 @@ export default function Dropzone({ onFileSelect }: DropzoneProps) {
 
       {/* Error Message */}
       {error && (
-        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-100 bg-red-50/50 p-3 text-xs text-red-600 animate-fadeIn">
-          <AlertCircle className="h-4.5 w-4.5 shrink-0 text-red-500" />
+        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-100 dark:border-red-900/50 bg-red-50/50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400 animate-fadeIn">
+          <AlertCircle className="h-4.5 w-4.5 shrink-0 text-red-500 dark:text-red-400" />
           <p className="font-medium leading-relaxed">{error}</p>
         </div>
       )}

@@ -10,7 +10,7 @@ interface CanvasPreviewProps {
   zoom: number;
   offsetX: number; // percentage (-100 to 100)
   offsetY: number; // percentage (-100 to 100)
-  aspectRatio: 'original' | '3:4' | '2:3';
+  aspectRatio: 'original' | '3:4' | '2:3' | '4:6';
   isProcessing: boolean;
   brushMode: 'none' | 'erase' | 'restore';
   brushSize: number;
@@ -45,13 +45,20 @@ const CanvasPreview = forwardRef<HTMLCanvasElement, CanvasPreviewProps>(
 
     // Canvas drawing effect
     useEffect(() => {
-      if (!originalImage || !ref) return;
+      if (!ref) return;
 
       const canvas = typeof ref === 'function' ? null : ref?.current;
       if (!canvas) return;
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+
+      if (!originalImage) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        canvas.width = 0;
+        canvas.height = 0;
+        return;
+      }
 
       // 1. Calculate Canvas Dimensions based on aspect ratio crop
       let canvasWidth = originalImage.width;
@@ -64,7 +71,7 @@ const CanvasPreview = forwardRef<HTMLCanvasElement, CanvasPreviewProps>(
         } else {
           canvasHeight = Math.round(originalImage.width * (4 / 3));
         }
-      } else if (aspectRatio === '2:3') {
+      } else if (aspectRatio === '2:3' || aspectRatio === '4:6') {
         const originalRatio = originalImage.width / originalImage.height;
         if (originalRatio > 2 / 3) {
           canvasWidth = Math.round(originalImage.height * (2 / 3));
@@ -253,15 +260,15 @@ const CanvasPreview = forwardRef<HTMLCanvasElement, CanvasPreviewProps>(
     };
 
     return (
-      <div className="relative flex w-full flex-col items-center justify-center rounded-2xl border border-neutral-100 bg-neutral-50/50 p-4 shadow-sm bg-grid-pattern min-h-[350px] md:min-h-[500px]">
+      <div className="relative flex w-full flex-col items-center justify-center rounded-2xl border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40 p-4 shadow-sm bg-grid-pattern min-h-[350px] md:min-h-[500px]">
         {/* Loading overlay during AI processing */}
         {isProcessing && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-white/80 backdrop-blur-sm animate-fadeIn">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-neutral-900 text-white shadow-md">
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm animate-fadeIn">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-950 shadow-md">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
-            <p className="text-sm font-semibold text-neutral-800">Processing AI Background Removal...</p>
-            <p className="text-xs text-neutral-400">Isolating subject from background...</p>
+            <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">Processing AI Background Removal...</p>
+            <p className="text-xs text-neutral-400 dark:text-neutral-500">Isolating subject from background...</p>
           </div>
         )}
 
@@ -276,7 +283,7 @@ const CanvasPreview = forwardRef<HTMLCanvasElement, CanvasPreviewProps>(
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleMouseUpOrLeave}
-            className={`max-w-full rounded-xl border border-neutral-200/80 shadow-md transition-all duration-300 ${
+            className={`max-w-full rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 shadow-md transition-all duration-300 ${
               isProcessing ? 'opacity-30 blur-xs' : 'opacity-100'
             } ${
               brushMode !== 'none' ? 'cursor-none touch-none' : 'cursor-default'
@@ -284,12 +291,12 @@ const CanvasPreview = forwardRef<HTMLCanvasElement, CanvasPreviewProps>(
             style={{
               maxHeight: isExpanded ? '680px' : '480px',
               objectFit: 'contain',
-              aspectRatio: aspectRatio === '3:4' ? '3/4' : aspectRatio === '2:3' ? '2/3' : 'auto',
+              aspectRatio: aspectRatio === '3:4' ? '3/4' : (aspectRatio === '2:3' || aspectRatio === '4:6') ? '2/3' : 'auto',
               ...(bgColor === 'transparent' ? {
-                backgroundImage: 'linear-gradient(45deg, #e5e5e5 25%, transparent 25%), linear-gradient(-45deg, #e5e5e5 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e5e5e5 75%), linear-gradient(-45deg, transparent 75%, #e5e5e5 75%)',
+                backgroundImage: 'linear-gradient(45deg, #888888 25%, transparent 25%), linear-gradient(-45deg, #888888 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #888888 75%), linear-gradient(-45deg, transparent 75%, #888888 75%)',
                 backgroundSize: '16px 16px',
                 backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
-                backgroundColor: '#ffffff',
+                backgroundColor: 'rgba(128,128,128,0.2)',
               } : {}),
             }}
           />
@@ -297,9 +304,9 @@ const CanvasPreview = forwardRef<HTMLCanvasElement, CanvasPreviewProps>(
 
         {/* Helper overlay hints for passport composition */}
         {!isProcessing && originalImage && (
-          <div className="mt-4 text-[10px] text-neutral-400 font-medium flex gap-4">
+          <div className="mt-4 text-[10px] text-neutral-400 dark:text-neutral-500 font-medium flex gap-4">
             {brushMode !== 'none' ? (
-              <span className="text-neutral-800 font-semibold animate-pulse">
+              <span className="text-neutral-800 dark:text-neutral-200 font-semibold animate-pulse">
                 • DRAG TO PAINT/CORRECT PHOTO EDGES
               </span>
             ) : (

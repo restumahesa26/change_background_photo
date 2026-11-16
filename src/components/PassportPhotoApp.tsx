@@ -1,11 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Header from './Header';
 import Dropzone from './Dropzone';
 import CanvasPreview from './CanvasPreview';
 import {
-  Undo2,
   Download,
   Image as ImageIcon,
   ZoomIn,
@@ -21,7 +20,7 @@ import {
   Minimize2
 } from 'lucide-react';
 
-type AspectRatio = 'original' | '3:4' | '2:3';
+type AspectRatio = 'original' | '3:4' | '2:3' | '4:6';
 type BrushMode = 'none' | 'erase' | 'restore';
 
 const PASSPORT_COLORS = [
@@ -60,7 +59,7 @@ export default function PassportPhotoApp() {
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const segmenterRef = useRef<any>(null);
+  const segmenterRef = useRef<{ send: (options: { image: HTMLImageElement }) => Promise<void> } | null>(null);
   const pendingImageRef = useRef<HTMLImageElement | null>(null);
   const rawMaskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const initialMaskCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -77,6 +76,41 @@ export default function PassportPhotoApp() {
   useEffect(() => {
     edgeFeatherRef.current = edgeFeather;
   }, [edgeFeather]);
+
+  // Apply mask with erosion (contraction) and blur (feather) to cut out subject
+  const applyMaskAndCutout = useCallback((
+    img: HTMLImageElement | HTMLCanvasElement | ImageBitmap,
+    rawMask: HTMLCanvasElement,
+    contraction: number,
+    feather: number
+  ) => {
+    const width = img.width;
+    const height = img.height;
+
+    // 1. Erode the mask (shrink edges)
+    let processedMask = rawMask;
+    if (contraction > 0) {
+      processedMask = erodeMaskCanvas(rawMask, contraction);
+    }
+
+    // 2. Feather the mask (soften edges)
+    if (feather > 0) {
+      processedMask = featherMaskCanvas(processedMask, feather);
+    }
+
+    // 3. Perform clipping composite
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d');
+
+    if (tempCtx) {
+      tempCtx.drawImage(processedMask, 0, 0, width, height);
+      tempCtx.globalCompositeOperation = 'source-in';
+      tempCtx.drawImage(img, 0, 0, width, height);
+      setForegroundCanvas(tempCanvas);
+    }
+  }, []);
 
   // Initialize MediaPipe Selfie Segmentation client-side (runs once on mount)
   useEffect(() => {
@@ -146,42 +180,7 @@ export default function PassportPhotoApp() {
     };
 
     initModel();
-  }, []);
-
-  // Apply mask with erosion (contraction) and blur (feather) to cut out subject
-  const applyMaskAndCutout = (
-    img: HTMLImageElement | HTMLCanvasElement | ImageBitmap,
-    rawMask: HTMLCanvasElement,
-    contraction: number,
-    feather: number
-  ) => {
-    const width = img.width;
-    const height = img.height;
-
-    // 1. Erode the mask (shrink edges)
-    let processedMask = rawMask;
-    if (contraction > 0) {
-      processedMask = erodeMaskCanvas(rawMask, contraction);
-    }
-
-    // 2. Feather the mask (soften edges)
-    if (feather > 0) {
-      processedMask = featherMaskCanvas(processedMask, feather);
-    }
-
-    // 3. Perform clipping composite
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    const tempCtx = tempCanvas.getContext('2d');
-
-    if (tempCtx) {
-      tempCtx.drawImage(processedMask, 0, 0, width, height);
-      tempCtx.globalCompositeOperation = 'source-in';
-      tempCtx.drawImage(img, 0, 0, width, height);
-      setForegroundCanvas(tempCanvas);
-    }
-  };
+  }, [applyMaskAndCutout]);
 
   // Watch for edge control adjustments to re-run cutout instantly
   useEffect(() => {
@@ -193,7 +192,7 @@ export default function PassportPhotoApp() {
         edgeFeather
       );
     }
-  }, [edgeContraction, edgeFeather, originalImage]);
+  }, [applyMaskAndCutout, edgeContraction, edgeFeather, originalImage]);
 
   // Handle uploaded image
   const handleFileSelect = (file: File) => {
@@ -247,7 +246,14 @@ export default function PassportPhotoApp() {
 
     // Create download link
     const link = document.createElement('a');
-    const ratioName = aspectRatio === 'original' ? 'full' : aspectRatio === '3:4' ? '3x4' : '2x3';
+    const ratioName =
+      aspectRatio === 'original'
+        ? 'full'
+        : aspectRatio === '3:4'
+          ? '3x4'
+          : aspectRatio === '4:6'
+            ? '4x6'
+            : '2x3';
     link.download = `pasfoto_${ratioName}_${Date.now()}.${extension}`;
     link.href = dataUrl;
     link.click();
@@ -283,6 +289,15 @@ export default function PassportPhotoApp() {
     initialMaskCanvasRef.current = null;
     setIsExpanded(false);
     handleResetAdjustments();
+    if (canvasRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   };
 
   // Reset manual brush edits back to original AI mask
@@ -351,13 +366,13 @@ export default function PassportPhotoApp() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-neutral-50/50">
+    <div className="flex flex-col min-h-screen bg-neutral-50/50 dark:bg-neutral-950 transition-colors">
       <Header />
 
       <main className="flex-1 mx-auto max-w-7xl w-full px-4 sm:px-6 lg:px-8 py-8 md:py-12">
         {/* Error Alert */}
         {modelError && (
-          <div className="mb-6 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700 shadow-xs">
+          <div className="mb-6 rounded-2xl border border-red-100 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-4 text-sm text-red-700 dark:text-red-300 shadow-xs">
             <span className="font-semibold">AI System Error:</span> {modelError}
           </div>
         )}
@@ -370,21 +385,21 @@ export default function PassportPhotoApp() {
 
               {/* 1. Upload Card */}
               {!originalImage ? (
-                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-xs">
+                <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-xs">
                   <div className="mb-4">
-                    <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
-                      <ImageIcon className="h-5 w-5 text-neutral-500" />
+                    <h2 className="text-base font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+                      <ImageIcon className="h-5 w-5 text-neutral-500 dark:text-neutral-400" />
                       Source Image
                     </h2>
-                    <p className="text-xs text-neutral-400 mt-1">
+                    <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
                       Upload a high-quality portrait photo with clear lighting and a visible face.
                     </p>
                   </div>
 
                   {isModelLoading && (
-                    <div className="mb-4 rounded-xl bg-neutral-50 border border-neutral-100 p-3 text-xs text-neutral-600 flex items-center gap-2.5">
-                      <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white shadow-2xs">
-                        <div className="h-3 w-3 rounded-full border border-neutral-300 border-t-neutral-800 animate-spin" />
+                    <div className="mb-4 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-100 dark:border-neutral-800 p-3 text-xs text-neutral-600 dark:text-neutral-300 flex items-center gap-2.5">
+                      <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white dark:bg-neutral-700 shadow-2xs">
+                        <div className="h-3 w-3 rounded-full border border-neutral-300 dark:border-neutral-500 border-t-neutral-800 dark:border-t-white animate-spin" />
                       </div>
                       <span>Initializing MediaPipe segmenter engine...</span>
                     </div>
@@ -394,34 +409,34 @@ export default function PassportPhotoApp() {
                 </div>
               ) : (
                 /* 2. Adjustment Panel */
-                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-xs space-y-6">
+                <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-xs space-y-6">
 
                   {/* Section Header */}
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-base font-semibold text-neutral-900">
+                      <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
                         Studio Controls
                       </h2>
-                      <p className="text-xs text-neutral-400 mt-0.5">
+                      <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-0.5">
                         Configure colors, sizing, and edges.
                       </p>
                     </div>
 
                     <button
                       onClick={handleRemovePhoto}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:text-red-600 hover:bg-red-50 hover:border-red-100 transition-all shadow-3xs"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-800/80 px-2.5 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 hover:border-red-100 dark:hover:border-red-900 transition-all shadow-3xs"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       <span>Remove Photo</span>
                     </button>
                   </div>
 
-                  <hr className="border-neutral-100" />
+                  <hr className="border-neutral-100 dark:border-neutral-800" />
 
                   {/* Section A: Background Color Selection */}
                   <div className="space-y-3.5">
-                    <label className="text-xs font-semibold text-neutral-800 tracking-wide uppercase flex items-center gap-2">
-                      <Palette className="h-4 w-4 text-neutral-400" />
+                    <label className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 tracking-wide uppercase flex items-center gap-2">
+                      <Palette className="h-4 w-4 text-neutral-400 dark:text-neutral-500" />
                       Background Color
                     </label>
 
@@ -432,12 +447,12 @@ export default function PassportPhotoApp() {
                           key={color.value}
                           onClick={() => handleColorChange(color.value)}
                           className={`flex items-center gap-2.5 rounded-xl border p-2.5 text-left text-xs font-medium transition-all ${bgColor === color.value
-                              ? 'border-neutral-900 bg-neutral-950 text-white shadow-2xs'
-                              : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/50'
+                            ? 'border-neutral-900 bg-neutral-950 text-white dark:border-neutral-100 dark:bg-white dark:text-neutral-950 shadow-2xs'
+                            : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/50 dark:border-neutral-800 dark:bg-neutral-800/50 dark:text-neutral-300 dark:hover:bg-neutral-800'
                             }`}
                         >
                           <span
-                            className="h-4.5 w-4.5 rounded-md border border-black/10 shadow-3xs shrink-0"
+                            className="h-4.5 w-4.5 rounded-md border border-black/10 dark:border-white/10 shadow-3xs shrink-0"
                             style={{ backgroundColor: color.value }}
                           />
                           <span className="truncate">{color.name}</span>
@@ -446,40 +461,40 @@ export default function PassportPhotoApp() {
                     </div>
 
                     {/* Custom Hex Picker Input */}
-                    <div className="flex items-center gap-2.5 rounded-xl border border-neutral-200 p-2.5 bg-neutral-50/20">
-                      <span className="text-xs text-neutral-400 font-medium pl-1 shrink-0">Custom Hex:</span>
+                    <div className="flex items-center gap-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 p-2.5 bg-neutral-50/20 dark:bg-neutral-800/40">
+                      <span className="text-xs text-neutral-400 dark:text-neutral-500 font-medium pl-1 shrink-0">Custom Hex:</span>
                       <input
                         type="text"
                         value={customColor}
                         onChange={(e) => handleColorChange(e.target.value)}
                         placeholder="#db1514"
-                        className="flex-1 bg-transparent border-0 p-0 text-xs font-semibold font-mono text-neutral-800 placeholder-neutral-300 focus:ring-0 focus:outline-hidden"
+                        className="flex-1 bg-transparent border-0 p-0 text-xs font-semibold font-mono text-neutral-800 dark:text-neutral-100 placeholder-neutral-300 dark:placeholder-neutral-600 focus:ring-0 focus:outline-hidden"
                       />
                       <input
                         type="color"
                         value={customColor}
                         onChange={(e) => handleColorChange(e.target.value)}
-                        className="h-7 w-7 rounded-lg border border-neutral-200 cursor-pointer overflow-hidden p-0 bg-transparent shrink-0"
+                        className="h-7 w-7 rounded-lg border border-neutral-200 dark:border-neutral-700 cursor-pointer overflow-hidden p-0 bg-transparent shrink-0"
                       />
                     </div>
                   </div>
 
-                  <hr className="border-neutral-100" />
+                  <hr className="border-neutral-100 dark:border-neutral-800" />
 
                   {/* Section B: Aspect Ratio Crop */}
                   <div className="space-y-3">
-                    <label className="text-xs font-semibold text-neutral-800 tracking-wide uppercase flex items-center gap-2">
-                      <Scissors className="h-4 w-4 text-neutral-400" />
+                    <label className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 tracking-wide uppercase flex items-center gap-2">
+                      <Scissors className="h-4 w-4 text-neutral-400 dark:text-neutral-500" />
                       Cropping (Aspect Ratio)
                     </label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(['original', '3:4', '2:3'] as AspectRatio[]).map((ratio) => (
+                    <div className="grid grid-cols-4 gap-2">
+                      {(['original', '3:4', '2:3', '4:6'] as AspectRatio[]).map((ratio) => (
                         <button
                           key={ratio}
                           onClick={() => setAspectRatio(ratio)}
                           className={`rounded-xl border py-2 text-xs font-medium uppercase transition-all ${aspectRatio === ratio
-                              ? 'border-neutral-900 bg-neutral-950 text-white shadow-2xs'
-                              : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/50'
+                            ? 'border-neutral-900 bg-neutral-950 text-white dark:border-neutral-100 dark:bg-white dark:text-neutral-950 shadow-2xs'
+                            : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/50 dark:border-neutral-800 dark:bg-neutral-800/50 dark:text-neutral-300 dark:hover:bg-neutral-800'
                             }`}
                         >
                           {ratio === 'original' ? 'Original' : ratio}
@@ -488,18 +503,18 @@ export default function PassportPhotoApp() {
                     </div>
                   </div>
 
-                  <hr className="border-neutral-100" />
+                  <hr className="border-neutral-100 dark:border-neutral-800" />
 
                   {/* Section C: Sizing / Positioning */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-neutral-800 tracking-wide uppercase flex items-center gap-2">
-                        <ZoomIn className="h-4 w-4 text-neutral-400" />
+                      <label className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 tracking-wide uppercase flex items-center gap-2">
+                        <ZoomIn className="h-4 w-4 text-neutral-400 dark:text-neutral-500" />
                         Face Alignment
                       </label>
                       <button
                         onClick={handleResetAdjustments}
-                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-neutral-400 hover:text-neutral-900 transition-colors uppercase tracking-wider"
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition-colors uppercase tracking-wider"
                       >
                         <RotateCcw className="h-3 w-3" />
                         Reset Position
@@ -508,9 +523,9 @@ export default function PassportPhotoApp() {
 
                     {/* Zoom Slider */}
                     <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-medium text-neutral-600">
-                        <span className="flex items-center gap-1"><ZoomIn className="h-3.5 w-3.5 text-neutral-400" /> Scale Zoom</span>
-                        <span className="font-mono text-[10px] bg-neutral-100 rounded-md px-1.5 py-0.5">{zoom.toFixed(2)}x</span>
+                      <div className="flex justify-between text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                        <span className="flex items-center gap-1"><ZoomIn className="h-3.5 w-3.5 text-neutral-400 dark:text-neutral-500" /> Scale Zoom</span>
+                        <span className="font-mono text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-md px-1.5 py-0.5">{zoom.toFixed(2)}x</span>
                       </div>
                       <input
                         type="range"
@@ -519,15 +534,15 @@ export default function PassportPhotoApp() {
                         step="0.01"
                         value={zoom}
                         onChange={(e) => setZoom(parseFloat(e.target.value))}
-                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer"
+                        className="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                       />
                     </div>
 
                     {/* Horizontal Position Offset */}
                     <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-medium text-neutral-600">
+                      <div className="flex justify-between text-xs font-medium text-neutral-600 dark:text-neutral-300">
                         <span>Horizontal Shift (X)</span>
-                        <span className="font-mono text-[10px] bg-neutral-100 rounded-md px-1.5 py-0.5">
+                        <span className="font-mono text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-md px-1.5 py-0.5">
                           {offsetX > 0 ? `+${offsetX}` : offsetX}%
                         </span>
                       </div>
@@ -538,15 +553,15 @@ export default function PassportPhotoApp() {
                         step="1"
                         value={offsetX}
                         onChange={(e) => setOffsetX(parseInt(e.target.value))}
-                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer"
+                        className="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                       />
                     </div>
 
                     {/* Vertical Position Offset */}
                     <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-medium text-neutral-600">
+                      <div className="flex justify-between text-xs font-medium text-neutral-600 dark:text-neutral-300">
                         <span>Vertical Shift (Y)</span>
-                        <span className="font-mono text-[10px] bg-neutral-100 rounded-md px-1.5 py-0.5">
+                        <span className="font-mono text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-md px-1.5 py-0.5">
                           {offsetY > 0 ? `+${offsetY}` : offsetY}%
                         </span>
                       </div>
@@ -557,27 +572,27 @@ export default function PassportPhotoApp() {
                         step="1"
                         value={offsetY}
                         onChange={(e) => setOffsetY(parseInt(e.target.value))}
-                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer"
+                        className="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                       />
                     </div>
                   </div>
 
-                  <hr className="border-neutral-100" />
+                  <hr className="border-neutral-100 dark:border-neutral-800" />
 
                   {/* Section D: Edge Optimization */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-neutral-800 tracking-wide uppercase flex items-center gap-2">
-                        <Scissors className="h-4 w-4 text-neutral-400" />
+                      <label className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 tracking-wide uppercase flex items-center gap-2">
+                        <Scissors className="h-4 w-4 text-neutral-400 dark:text-neutral-500" />
                         Edge Quality
                       </label>
                     </div>
 
                     {/* Contraction (Choke) Slider */}
                     <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-medium text-neutral-600">
+                      <div className="flex justify-between text-xs font-medium text-neutral-600 dark:text-neutral-300">
                         <span>Edge Contraction (Choke)</span>
-                        <span className="font-mono text-[10px] bg-neutral-100 rounded-md px-1.5 py-0.5">{edgeContraction.toFixed(1)}px</span>
+                        <span className="font-mono text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-md px-1.5 py-0.5">{edgeContraction.toFixed(1)}px</span>
                       </div>
                       <input
                         type="range"
@@ -586,15 +601,15 @@ export default function PassportPhotoApp() {
                         step="0.1"
                         value={edgeContraction}
                         onChange={(e) => setEdgeContraction(parseFloat(e.target.value))}
-                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer"
+                        className="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                       />
                     </div>
 
                     {/* Feathering Slider */}
                     <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-medium text-neutral-600">
+                      <div className="flex justify-between text-xs font-medium text-neutral-600 dark:text-neutral-300">
                         <span>Edge Feathering (Smoothness)</span>
-                        <span className="font-mono text-[10px] bg-neutral-100 rounded-md px-1.5 py-0.5">{edgeFeather.toFixed(1)}px</span>
+                        <span className="font-mono text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-md px-1.5 py-0.5">{edgeFeather.toFixed(1)}px</span>
                       </div>
                       <input
                         type="range"
@@ -603,23 +618,23 @@ export default function PassportPhotoApp() {
                         step="0.1"
                         value={edgeFeather}
                         onChange={(e) => setEdgeFeather(parseFloat(e.target.value))}
-                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer"
+                        className="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                       />
                     </div>
                   </div>
 
-                  <hr className="border-neutral-100" />
+                  <hr className="border-neutral-100 dark:border-neutral-800" />
 
                   {/* Section E: Manual Brush Editor */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-neutral-800 tracking-wide uppercase flex items-center gap-2">
-                        <Paintbrush className="h-4 w-4 text-neutral-400" />
+                      <label className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 tracking-wide uppercase flex items-center gap-2">
+                        <Paintbrush className="h-4 w-4 text-neutral-400 dark:text-neutral-500" />
                         Manual Mask Editor
                       </label>
                       <button
                         onClick={handleResetManualEdits}
-                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-neutral-400 hover:text-neutral-900 transition-colors uppercase tracking-wider"
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition-colors uppercase tracking-wider"
                         title="Restore original AI cutout"
                       >
                         <RotateCcw className="h-3 w-3" />
@@ -632,8 +647,8 @@ export default function PassportPhotoApp() {
                       <button
                         onClick={() => setBrushMode('none')}
                         className={`flex flex-col items-center justify-center rounded-lg border py-2.5 text-[10px] font-semibold gap-1 transition-all ${brushMode === 'none'
-                            ? 'border-neutral-900 bg-neutral-950 text-white shadow-xs'
-                            : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/80'
+                          ? 'border-neutral-900 bg-neutral-950 text-white dark:border-neutral-100 dark:bg-white dark:text-neutral-950 shadow-xs'
+                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/80 dark:border-neutral-800 dark:bg-neutral-800/50 dark:text-neutral-300 dark:hover:bg-neutral-800'
                           }`}
                       >
                         <MousePointer className="h-3.5 w-3.5" />
@@ -643,8 +658,8 @@ export default function PassportPhotoApp() {
                       <button
                         onClick={() => setBrushMode('erase')}
                         className={`flex flex-col items-center justify-center rounded-lg border py-2.5 text-[10px] font-semibold gap-1 transition-all ${brushMode === 'erase'
-                            ? 'border-neutral-900 bg-neutral-950 text-white shadow-xs ring-1 ring-neutral-900'
-                            : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/80'
+                          ? 'border-neutral-900 bg-neutral-950 text-white dark:border-neutral-100 dark:bg-white dark:text-neutral-950 shadow-xs ring-1 ring-neutral-900 dark:ring-white'
+                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/80 dark:border-neutral-800 dark:bg-neutral-800/50 dark:text-neutral-300 dark:hover:bg-neutral-800'
                           }`}
                       >
                         <Eraser className="h-3.5 w-3.5" />
@@ -654,8 +669,8 @@ export default function PassportPhotoApp() {
                       <button
                         onClick={() => setBrushMode('restore')}
                         className={`flex flex-col items-center justify-center rounded-lg border py-2.5 text-[10px] font-semibold gap-1 transition-all ${brushMode === 'restore'
-                            ? 'border-neutral-900 bg-neutral-950 text-white shadow-xs ring-1 ring-neutral-900'
-                            : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/80'
+                          ? 'border-neutral-900 bg-neutral-950 text-white dark:border-neutral-100 dark:bg-white dark:text-neutral-950 shadow-xs ring-1 ring-neutral-900 dark:ring-white'
+                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50/80 dark:border-neutral-800 dark:bg-neutral-800/50 dark:text-neutral-300 dark:hover:bg-neutral-800'
                           }`}
                       >
                         <Paintbrush className="h-3.5 w-3.5" />
@@ -666,9 +681,9 @@ export default function PassportPhotoApp() {
                     {/* Brush Size Slider */}
                     {brushMode !== 'none' && (
                       <div className="space-y-1.5 animate-fadeIn">
-                        <div className="flex justify-between text-xs font-medium text-neutral-600">
+                        <div className="flex justify-between text-xs font-medium text-neutral-600 dark:text-neutral-300">
                           <span>Brush Size</span>
-                          <span className="font-mono text-[10px] bg-neutral-100 rounded-md px-1.5 py-0.5">{brushSize}px</span>
+                          <span className="font-mono text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-md px-1.5 py-0.5">{brushSize}px</span>
                         </div>
                         <input
                           type="range"
@@ -677,19 +692,19 @@ export default function PassportPhotoApp() {
                           step="1"
                           value={brushSize}
                           onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                          className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer"
+                          className="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                         />
                       </div>
                     )}
                   </div>
 
-                  <hr className="border-neutral-100" />
+                  <hr className="border-neutral-100 dark:border-neutral-800" />
 
                   {/* Section F: Download Primary Button */}
                   <button
                     onClick={handleDownload}
                     disabled={isProcessing}
-                    className="w-full flex items-center justify-center gap-2.5 rounded-2xl bg-neutral-900 hover:bg-neutral-800 disabled:bg-neutral-200 text-white font-semibold text-sm py-4 px-6 shadow-md hover:shadow-lg disabled:shadow-none hover:scale-[1.01] active:scale-[0.99] transition-all"
+                    className="w-full flex items-center justify-center gap-2.5 rounded-2xl bg-neutral-900 hover:bg-neutral-800 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-neutral-950 disabled:bg-neutral-200 dark:disabled:bg-neutral-800 dark:disabled:text-neutral-600 font-semibold text-sm py-4 px-6 shadow-md hover:shadow-lg disabled:shadow-none hover:scale-[1.01] active:scale-[0.99] transition-all"
                   >
                     <Download className="h-5 w-5" />
                     <span>Download Pas Foto</span>
@@ -701,20 +716,20 @@ export default function PassportPhotoApp() {
 
           {/* RIGHT COLUMN: PREVIEW AREA */}
           <section className={`${isExpanded ? 'lg:col-span-12' : 'lg:col-span-7'} space-y-6 transition-all duration-300`}>
-            <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-xs flex flex-col h-full">
+            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 shadow-xs flex flex-col h-full">
               <div className="mb-4 flex items-center justify-between">
                 <div>
-                  <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
+                  <h2 className="text-base font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
                     Studio Preview
                   </h2>
-                  <p className="text-xs text-neutral-400 mt-1">
+                  <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
                     Live studio viewport showing the background-swapped photo.
                   </p>
                 </div>
                 {originalImage && (
                   <button
                     onClick={() => setIsExpanded(!isExpanded)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-neutral-600 hover:text-neutral-950 hover:bg-neutral-50 transition-all shadow-3xs"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-800/80 px-2.5 py-1.5 text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:text-neutral-950 dark:hover:text-white hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-all shadow-3xs"
                     title={isExpanded ? 'Exit Full View' : 'Full View'}
                   >
                     {isExpanded ? (
@@ -732,111 +747,111 @@ export default function PassportPhotoApp() {
                 )}
               </div>
 
-              {/* Canvas viewport container */}
-              <div className="relative w-full">
-                <CanvasPreview
-                  ref={canvasRef}
-                  originalImage={originalImage}
-                  foregroundCanvas={foregroundCanvas}
-                  bgColor={bgColor}
-                  zoom={zoom}
-                  offsetX={offsetX}
-                  offsetY={offsetY}
-                  aspectRatio={aspectRatio}
-                  isProcessing={isProcessing}
-                  brushMode={brushMode}
-                  brushSize={brushSize}
-                  onPaint={handlePaint}
-                  onPaintStart={handlePaintStart}
-                  onPaintEnd={handlePaintEnd}
-                  isExpanded={isExpanded}
-                />
+              {originalImage ? (
+                /* Canvas viewport container */
+                <div className="relative w-full">
+                  <CanvasPreview
+                    ref={canvasRef}
+                    originalImage={originalImage}
+                    foregroundCanvas={foregroundCanvas}
+                    bgColor={bgColor}
+                    zoom={zoom}
+                    offsetX={offsetX}
+                    offsetY={offsetY}
+                    aspectRatio={aspectRatio}
+                    isProcessing={isProcessing}
+                    brushMode={brushMode}
+                    brushSize={brushSize}
+                    onPaint={handlePaint}
+                    onPaintStart={handlePaintStart}
+                    onPaintEnd={handlePaintEnd}
+                    isExpanded={isExpanded}
+                  />
 
-                {/* Floating Toolbar overlay in Full View Mode */}
-                {isExpanded && !isProcessing && (
-                  <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 rounded-2xl border border-neutral-200/80 bg-white/95 backdrop-blur-md p-2.5 shadow-xl animate-fadeIn">
+                  {/* Floating Toolbar overlay in Full View Mode */}
+                  {isExpanded && !isProcessing && (
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 rounded-2xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md p-2.5 shadow-xl animate-fadeIn">
 
-                    {/* Tool Swapper */}
-                    <div className="flex items-center bg-neutral-100/80 p-0.5 rounded-lg border border-neutral-200/30">
+                      {/* Tool Swapper */}
+                      <div className="flex items-center bg-neutral-100/80 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200/30 dark:border-neutral-700/50">
+                        <button
+                          onClick={() => setBrushMode('none')}
+                          className={`p-1.5 rounded-md transition-all ${brushMode === 'none'
+                            ? 'bg-white dark:bg-neutral-700 text-neutral-950 dark:text-white shadow-2xs font-semibold'
+                            : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                            }`}
+                          title="Navigate / Move"
+                        >
+                          <MousePointer className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => setBrushMode('erase')}
+                          className={`p-1.5 rounded-md transition-all ${brushMode === 'erase'
+                            ? 'bg-neutral-950 dark:bg-white text-white dark:text-neutral-950 shadow-2xs font-semibold'
+                            : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                            }`}
+                          title="Erase Background"
+                        >
+                          <Eraser className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => setBrushMode('restore')}
+                          className={`p-1.5 rounded-md transition-all ${brushMode === 'restore'
+                            ? 'bg-neutral-950 dark:bg-white text-white dark:text-neutral-950 shadow-2xs font-semibold'
+                            : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                            }`}
+                          title="Restore Subject"
+                        >
+                          <Paintbrush className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      {/* Brush Size Slider (if not navigation mode) */}
+                      {brushMode !== 'none' && (
+                        <div className="flex items-center gap-2 border-l border-neutral-200 dark:border-neutral-700 pl-3">
+                          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 font-semibold uppercase tracking-wider shrink-0">Size:</span>
+                          <input
+                            type="range"
+                            min="4"
+                            max="80"
+                            step="1"
+                            value={brushSize}
+                            onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                            className="w-24 h-1 bg-neutral-200 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer"
+                          />
+                          <span className="font-mono text-xs font-semibold text-neutral-800 dark:text-neutral-200 w-8 text-right shrink-0">{brushSize}px</span>
+                        </div>
+                      )}
+
+                      <div className="h-5 w-[1px] bg-neutral-200 dark:bg-neutral-700 shrink-0 mx-1" />
+
+                      {/* Action buttons */}
                       <button
-                        onClick={() => setBrushMode('none')}
-                        className={`p-1.5 rounded-md transition-all ${brushMode === 'none'
-                            ? 'bg-white text-neutral-950 shadow-2xs font-semibold'
-                            : 'text-neutral-500 hover:text-neutral-800'
-                          }`}
-                        title="Navigate / Move"
+                        onClick={handleResetManualEdits}
+                        className="p-1.5 rounded-md text-neutral-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                        title="Reset Brush Edits"
                       >
-                        <MousePointer className="h-4 w-4" />
+                        <RotateCcw className="h-4 w-4" />
                       </button>
+
                       <button
-                        onClick={() => setBrushMode('erase')}
-                        className={`p-1.5 rounded-md transition-all ${brushMode === 'erase'
-                            ? 'bg-neutral-950 text-white shadow-2xs font-semibold'
-                            : 'text-neutral-500 hover:text-neutral-800'
-                          }`}
-                        title="Erase Background"
+                        onClick={() => setIsExpanded(false)}
+                        className="p-1.5 rounded-md bg-neutral-950 dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-200 text-white dark:text-neutral-950 transition-colors"
+                        title="Exit Full View"
                       >
-                        <Eraser className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => setBrushMode('restore')}
-                        className={`p-1.5 rounded-md transition-all ${brushMode === 'restore'
-                            ? 'bg-neutral-950 text-white shadow-2xs font-semibold'
-                            : 'text-neutral-500 hover:text-neutral-800'
-                          }`}
-                        title="Restore Subject"
-                      >
-                        <Paintbrush className="h-4 w-4" />
+                        <Minimize2 className="h-4 w-4" />
                       </button>
                     </div>
-
-                    {/* Brush Size Slider (if not navigation mode) */}
-                    {brushMode !== 'none' && (
-                      <div className="flex items-center gap-2 border-l border-neutral-200 pl-3">
-                        <span className="text-[10px] text-neutral-400 font-semibold uppercase tracking-wider shrink-0">Size:</span>
-                        <input
-                          type="range"
-                          min="4"
-                          max="80"
-                          step="1"
-                          value={brushSize}
-                          onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                          className="w-24 h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer"
-                        />
-                        <span className="font-mono text-xs font-semibold text-neutral-800 w-8 text-right shrink-0">{brushSize}px</span>
-                      </div>
-                    )}
-
-                    <div className="h-5 w-[1px] bg-neutral-200 shrink-0 mx-1" />
-
-                    {/* Action buttons */}
-                    <button
-                      onClick={handleResetManualEdits}
-                      className="p-1.5 rounded-md text-neutral-500 hover:text-red-600 transition-colors"
-                      title="Reset Brush Edits"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                    </button>
-
-                    <button
-                      onClick={() => setIsExpanded(false)}
-                      className="p-1.5 rounded-md bg-neutral-950 hover:bg-neutral-800 text-white transition-colors"
-                      title="Exit Full View"
-                    >
-                      <Minimize2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Empty state placeholder when no photo has been uploaded */}
-              {!originalImage && (
-                <div className="flex-1 flex flex-col items-center justify-center py-16 px-4 text-center rounded-2xl border border-dashed border-neutral-200 bg-neutral-50/20">
-                  <div className="h-16 w-16 rounded-full bg-neutral-50 border border-neutral-100 text-neutral-400 flex items-center justify-center shadow-3xs mb-4">
+                  )}
+                </div>
+              ) : (
+                /* Empty state placeholder when no photo has been uploaded */
+                <div className="flex-1 flex flex-col items-center justify-center py-20 px-4 text-center rounded-2xl border border-dashed border-neutral-200 dark:border-neutral-800 bg-neutral-50/20 dark:bg-neutral-900/40">
+                  <div className="h-16 w-16 rounded-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-100 dark:border-neutral-700 text-neutral-400 dark:text-neutral-500 flex items-center justify-center shadow-3xs mb-4">
                     <ImageIcon className="h-7 w-7" />
                   </div>
-                  <h3 className="text-sm font-semibold text-neutral-800">No Image Uploaded</h3>
-                  <p className="text-xs text-neutral-400 max-w-[280px] mt-1.5 leading-relaxed">
+                  <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">No Image Uploaded</h3>
+                  <p className="text-xs text-neutral-400 dark:text-neutral-500 max-w-[280px] mt-1.5 leading-relaxed">
                     Upload your portrait photo on the left. The AI background segmenter will run automatically.
                   </p>
                 </div>
@@ -844,21 +859,21 @@ export default function PassportPhotoApp() {
 
               {/* Quick instructions and warnings */}
               {originalImage && (
-                <div className="mt-5 rounded-xl border border-neutral-100 bg-neutral-50/50 p-4 flex gap-3 text-xs leading-relaxed text-neutral-500">
-                  <HelpCircle className="h-4.5 w-4.5 text-neutral-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-semibold text-neutral-700 block mb-0.5">Quick Guide:</span>
-                    To align the photo with formal passport rules:
-                    <ul className="list-disc list-inside mt-1 space-y-0.5 text-neutral-400">
-                      <li>Use the <span className="font-medium text-neutral-600">Zoom</span> slider to make the head take up the upper-middle region.</li>
-                      <li>Use the <span className="font-medium text-neutral-600">Vertical Offset (Y)</span> slider to adjust headroom.</li>
-                      <li>Select <span className="font-medium text-neutral-600">Erase Bg</span> to paint away remaining background halos.</li>
-                      <li>Select <span className="font-medium text-neutral-600">Restore Subject</span> to paint back ears or hair accidentally cut off by the AI.</li>
-                    </ul>
+                  <div className="mt-5 rounded-xl border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/40 p-4 flex gap-3 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+                    <HelpCircle className="h-4.5 w-4.5 text-neutral-400 dark:text-neutral-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold text-neutral-700 dark:text-neutral-200 block mb-0.5">Quick Guide:</span>
+                      To align the photo with formal passport rules:
+                        <ul className="list-disc list-inside mt-1 space-y-0.5 text-neutral-500 dark:text-neutral-400">
+                          <li>Use the <span className="font-medium text-neutral-700 dark:text-neutral-200">Zoom</span> slider to make the head take up the upper-middle region.</li>
+                          <li>Use the <span className="font-medium text-neutral-700 dark:text-neutral-200">Vertical Offset (Y)</span> slider to adjust headroom.</li>
+                          <li>Select <span className="font-medium text-neutral-700 dark:text-neutral-200">Erase Bg</span> to paint away remaining background halos.</li>
+                          <li>Select <span className="font-medium text-neutral-700 dark:text-neutral-200">Restore Subject</span> to paint back ears or hair accidentally cut off by the AI.</li>
+                        </ul>
+                    </div>
                   </div>
-                </div>
               )}
-            </div>
+                </div>
           </section>
 
         </div>
